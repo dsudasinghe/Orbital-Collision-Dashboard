@@ -70,7 +70,7 @@ def ensure_partitions(conn: Connection, months: set[date]) -> None:
         ))
 
 
-def _copy_rows(conn: Connection, table: str, columns: list[str], rows) -> None:
+def copy_rows(conn: Connection, table: str, columns: list[str], rows) -> None:
     """Bulk-load via COPY on the same transaction; row-by-row inserts take ~100x longer over the network."""
     with conn.connection.driver_connection.cursor() as cur:
         with cur.copy(f"COPY {table} ({', '.join(columns)}) FROM STDIN") as copy:
@@ -87,13 +87,13 @@ def store_records(conn: Connection, records: list[OmmRecord], source: str) -> In
     # Latest name per object wins if a batch carries several sets for one object.
     objects = {r.norad_cat_id: r for r in sorted(records, key=lambda r: r.epoch)}
     conn.execute(_CREATE_OBJECTS_STAGE)
-    _copy_rows(conn, "objects_stage", _OBJECT_COLUMNS,
+    copy_rows(conn, "objects_stage", _OBJECT_COLUMNS,
                ((r.norad_cat_id, r.object_name, r.object_id) for r in objects.values()))
     conn.execute(_MERGE_OBJECTS_STAGE)
 
     # Stage then merge, so one statement reports how many sets were new.
     conn.execute(_CREATE_GP_STAGE)
-    _copy_rows(conn, "gp_stage", [*_GP_COLUMNS, "source"],
+    copy_rows(conn, "gp_stage", [*_GP_COLUMNS, "source"],
                ((*(getattr(r, c) for c in _GP_COLUMNS), source) for r in records))
     inserted = conn.execute(_MERGE_GP_STAGE).rowcount
     conn.execute(text("DROP TABLE gp_stage"))

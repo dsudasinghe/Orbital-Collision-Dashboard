@@ -1,6 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
@@ -16,6 +17,9 @@ class Settings(BaseSettings):
     # re-download the same data more often than that.
     celestrak_min_interval_s: int = 2 * 60 * 60
     data_dir: Path = BACKEND_DIR / "data"
+
+    spacetrack_identity: str | None = None
+    spacetrack_password: SecretStr | None = None
 
     @property
     def sqlalchemy_url(self) -> str:
