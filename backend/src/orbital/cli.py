@@ -16,11 +16,29 @@ log = logging.getLogger("orbital")
 # A job fetches, parses and stores one feed: returns (download, received, inserted, rejected).
 Job = Callable[[], tuple[CachedText, int, int, int]]
 
+# Minimum time between upstream contacts per feed, from each provider's usage policy.
+MIN_INTERVAL_S = {
+    "celestrak:active": 2 * 3600,
+    "celestrak:satcat": 24 * 3600,
+    "spacetrack:gp": spacetrack.GP_MIN_INTERVAL_S,
+    "spacetrack:cdm_public": spacetrack.CDM_MIN_INTERVAL_S,
+}
 
-def _run_logged(source: str, job: Job) -> int:
-    """Run a job with an ingest_runs record; the start is committed first so failures are still logged."""
+
+def _run_logged(source: str, job: Job, *, force: bool = False) -> int:
+    """Run a job with an ingest_runs record; the start is committed first so failures are still logged.
+
+    Skips the job if the feed was contacted within its interval (checked in the
+    database, so it holds on any machine). Failed attempts count too, so a bad
+    login can't turn into a retry storm.
+    """
     engine = get_engine()
     with engine.begin() as conn:
+        age = ingest.last_attempt_age_s(conn, source)
+        interval = MIN_INTERVAL_S.get(source, 0)
+        if not force and age is not None and age < interval:
+            print(f"{source}: not due (last contact {age / 3600:.1f} h ago, interval {interval / 3600:g} h)")
+            return 0
         run_id = ingest.start_run(conn, source)
     try:
         fetch, received, inserted, rejected = job()
@@ -66,6 +84,17 @@ def satcat_job(force: bool) -> Job:
     return job
 
 
+def spacetrack_gp_job(force: bool) -> Job:
+    def job():
+        raws, fetch = spacetrack.fetch_gp_catalog(get_settings(), force=force)
+        records, rejected = parse_records(raws)
+        _log_rejected(rejected)
+        with get_engine().begin() as conn:
+            result = ingest.store_records(conn, records, "spacetrack:gp")
+        return fetch, result.received, result.inserted, len(rejected)
+    return job
+
+
 def cdm_job(days: int, force: bool) -> Job:
     def job():
         raws, fetch = spacetrack.fetch_cdm_public(get_settings(), days=days, force=force)
@@ -85,28 +114,37 @@ def cmd_db_check(_args: argparse.Namespace) -> int:
 
 
 def cmd_ingest_gp(args: argparse.Namespace) -> int:
-    return _run_logged(f"celestrak:{args.group}", gp_job(args.group, args.force))
+    return _run_logged(f"celestrak:{args.group}", gp_job(args.group, args.force), force=args.force)
 
 
 def cmd_ingest_satcat(args: argparse.Namespace) -> int:
-    return _run_logged("celestrak:satcat", satcat_job(args.force))
+    return _run_logged("celestrak:satcat", satcat_job(args.force), force=args.force)
+
+
+def cmd_ingest_catalog(args: argparse.Namespace) -> int:
+    return _run_logged("spacetrack:gp", spacetrack_gp_job(args.force), force=args.force)
 
 
 def cmd_ingest_cdm(args: argparse.Namespace) -> int:
-    return _run_logged("spacetrack:cdm_public", cdm_job(args.days, args.force))
+    return _run_logged("spacetrack:cdm_public", cdm_job(args.days, args.force), force=args.force)
 
 
 def cmd_refresh(args: argparse.Namespace) -> int:
-    """Everything a scheduled run needs. Each feed's cache window decides whether it actually downloads."""
+    """Everything a scheduled run needs; each feed runs only when its interval has passed.
+
+    SATCAT goes first so new objects get labels before their element sets arrive.
+    """
     status = _run_logged("celestrak:satcat", satcat_job(False))
     status |= _run_logged("celestrak:active", gp_job("active", False))
-    if args.skip_cdm:
-        return status
     settings = get_settings()
-    if settings.spacetrack_identity and settings.spacetrack_password:
-        status |= _run_logged("spacetrack:cdm_public", cdm_job(1, False))
-    else:
-        log.info("Space-Track credentials not set; skipping cdm_public")
+    if args.skip_spacetrack:
+        return status
+    if not (settings.spacetrack_identity and settings.spacetrack_password):
+        log.info("Space-Track credentials not set; skipping gp and cdm_public")
+        return status
+    status |= _run_logged("spacetrack:gp", spacetrack_gp_job(False))
+    # 2 days back: overlaps the 8-hour cadence so a missed run loses nothing.
+    status |= _run_logged("spacetrack:cdm_public", cdm_job(2, False))
     return status
 
 
@@ -119,20 +157,24 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("ingest-gp", help="fetch a CelesTrak GP group as OMM JSON and store it")
     p.add_argument("--group", default="active", help="CelesTrak GROUP name (default: active)")
-    p.add_argument("--force", action="store_true", help="ignore the 2-hour cache window")
+    p.add_argument("--force", action="store_true", help="ignore the 2-hour interval")
     p.set_defaults(func=cmd_ingest_gp)
 
     p = sub.add_parser("ingest-satcat", help="fetch CelesTrak SATCAT and update object labels")
-    p.add_argument("--force", action="store_true", help="ignore the 24-hour cache window")
+    p.add_argument("--force", action="store_true", help="ignore the 24-hour interval")
     p.set_defaults(func=cmd_ingest_satcat)
+
+    p = sub.add_parser("ingest-catalog", help="fetch Space-Track's full GP catalog (debris included)")
+    p.add_argument("--force", action="store_true", help="ignore the 8-hour window (Space-Track allows 1/hour)")
+    p.set_defaults(func=cmd_ingest_catalog)
 
     p = sub.add_parser("ingest-cdm", help="fetch Space-Track public conjunction messages")
     p.add_argument("--days", type=int, default=1, help="messages created in the last N days (default: 1)")
     p.add_argument("--force", action="store_true", help="ignore the 8-hour window (Space-Track allows 3/day)")
     p.set_defaults(func=cmd_ingest_cdm)
 
-    p = sub.add_parser("refresh", help="scheduled run: SATCAT, GP and CDMs, each only when due")
-    p.add_argument("--skip-cdm", action="store_true")
+    p = sub.add_parser("refresh", help="scheduled run: every feed whose interval has passed")
+    p.add_argument("--skip-spacetrack", action="store_true")
     p.set_defaults(func=cmd_refresh)
 
     args = parser.parse_args(argv)

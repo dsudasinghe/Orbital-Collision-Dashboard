@@ -1,8 +1,8 @@
-"""Space-Track client for the public conjunction feed (cdm_public).
+"""Space-Track client: full GP catalog (gp) and public conjunction messages (cdm_public).
 
 Limits (space-track.org/documentation, checked Nov 2026): under 30 requests/min
-and 300/hour overall; all-constellation CDM queries at most 3/day. We log in,
-make one query, log out, and refuse to re-download within 8 hours.
+and 300/hour overall; gp at most 1/hour; all-constellation CDM queries at most
+3/day. Each fetch logs in, makes one query and logs out.
 
 The user agreement restricts redistribution, so raw messages stay in a private
 table; the public site only shows derived stats and links.
@@ -21,6 +21,7 @@ from orbital.ingest import copy_rows
 
 BASE_URL = "https://www.space-track.org"
 CDM_MIN_INTERVAL_S = 8 * 60 * 60
+GP_MIN_INTERVAL_S = 8 * 60 * 60  # allowed hourly; 3/day is plenty for nightly screening
 
 
 class SpaceTrackError(RuntimeError):
@@ -67,6 +68,24 @@ def fetch_cdm_public(settings: Settings, *, days: int = 1, force: bool = False) 
     cached = cached_download(
         settings.data_dir / "spacetrack" / "cdm_public", "json",
         min_interval_s=CDM_MIN_INTERVAL_S, force=force,
+        download=lambda: _query(settings, path), validate=_parse,
+    )
+    return _parse(cached.text), cached
+
+
+def fetch_gp_catalog(settings: Settings, *, force: bool = False) -> tuple[list[dict[str, Any]], CachedText]:
+    """Latest OMM for every object still in orbit, debris included.
+
+    This is Space-Track's recommended full-catalog query: not decayed, with an
+    element set from the last 30 days. Records use the same OMM keywords as CelesTrak.
+    """
+    path = (
+        "/basicspacedata/query/class/gp/decay_date/null-val/epoch/%3Enow-30"
+        "/orderby/norad_cat_id/format/json"
+    )
+    cached = cached_download(
+        settings.data_dir / "spacetrack" / "gp", "json",
+        min_interval_s=GP_MIN_INTERVAL_S, force=force,
         download=lambda: _query(settings, path), validate=_parse,
     )
     return _parse(cached.text), cached

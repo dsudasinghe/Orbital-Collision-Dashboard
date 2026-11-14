@@ -119,3 +119,17 @@ def finish_run(
         WHERE id = :id
     """), {"id": run_id, "status": status, "received": received, "inserted": inserted,
            "rejected": rejected, "from_cache": from_cache, "error": error})
+
+
+def last_attempt_age_s(conn: Connection, source: str) -> float | None:
+    """Seconds since the last run that contacted the upstream service (a download, or a failure).
+
+    Kept in the database rather than in the local file cache so the rate limit
+    holds across machines, e.g. ephemeral CI runners.
+    """
+    age = conn.execute(text("""
+        SELECT extract(epoch FROM now() - max(started_at))
+        FROM ingest_runs
+        WHERE source = :source AND (status = 'failed' OR (status = 'ok' AND NOT from_cache))
+    """), {"source": source}).scalar()
+    return None if age is None else float(age)
