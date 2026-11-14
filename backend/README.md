@@ -17,7 +17,7 @@ copy .env.example .env   # then fill in DATABASE_URL
 
 ```powershell
 .venv\Scripts\orbital db-check              # test the connection
-.venv\Scriptslembic upgrade head          # create / update tables
+.venv\Scripts\alembic upgrade head          # create / update tables
 .venv\Scripts\orbital refresh               # every feed that is due (what the scheduler runs)
 .venv\Scripts\orbital ingest-gp             # CelesTrak GROUP=active (operational payloads), OMM JSON
 .venv\Scripts\orbital ingest-satcat         # CelesTrak SATCAT: type, owner, launch/decay dates
