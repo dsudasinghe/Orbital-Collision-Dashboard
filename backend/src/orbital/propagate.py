@@ -8,7 +8,8 @@ ourselves.
 
 from datetime import datetime
 
-from sgp4.api import WGS72, Satrec, jday
+import numpy as np
+from sgp4.api import WGS72, Satrec, SatrecArray, jday
 
 from orbital.omm import OmmRecord
 
@@ -52,3 +53,25 @@ def position_teme_km(sat: Satrec, when: datetime) -> tuple[float, float, float]:
     if err:
         raise RuntimeError(f"sgp4 error code {err}")
     return r
+
+
+def julian_dates(times: list[datetime]) -> tuple[np.ndarray, np.ndarray]:
+    """Split Julian dates (whole + fraction) for sgp4, which keeps them apart for precision."""
+    pairs = [
+        jday(t.year, t.month, t.day, t.hour, t.minute, t.second + t.microsecond / 1e6)
+        for t in times
+    ]
+    jd, fr = np.array(pairs).T
+    # The C++ extension needs contiguous arrays; .T alone gives strided views.
+    return np.ascontiguousarray(jd), np.ascontiguousarray(fr)
+
+
+def propagate_batch(sats: list[Satrec], times: list[datetime]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Propagate every satellite to every time in one vectorised C++ call.
+
+    Returns (err, r, v) shaped (n_sats, n_times), (n_sats, n_times, 3) twice, in
+    TEME km and km/s. err is the sgp4 error code; non-zero rows hold NaN.
+    """
+    jd, fr = julian_dates(times)
+    err, r, v = SatrecArray(sats).sgp4(jd, fr)
+    return err, r, v
