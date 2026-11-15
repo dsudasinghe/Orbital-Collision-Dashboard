@@ -1,11 +1,12 @@
 name: refresh
 
-# Every 2 hours (CelesTrak's update interval), off the top of the hour when
-# runners are busiest. `orbital refresh` decides per feed whether it is due,
-# using ingest_runs in the database, so Space-Track's limits hold here too.
+# Every 30 minutes, off the top of the hour when runners are busiest. GitHub
+# drops scheduled runs under load, so triggering often keeps the data fresh;
+# `orbital refresh` decides per feed whether it is actually due (CelesTrak 2 h,
+# Space-Track 8 h) using ingest_runs, so extra triggers cost one DB query.
 on:
   schedule:
-    - cron: "23 */2 * * *"
+    - cron: "7,37 * * * *"
   workflow_dispatch:
 
 concurrency:
@@ -25,8 +26,8 @@ jobs:
       SPACETRACK_PASSWORD: ${{ secrets.SPACETRACK_PASSWORD }}
       CELESTRAK_USER_AGENT: ${{ secrets.CELESTRAK_USER_AGENT }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
           cache: pip
