@@ -24,7 +24,16 @@ copy .env.example .env   # then fill in DATABASE_URL
 .venv\Scripts\orbital ingest-catalog        # Space-Track full GP catalog, debris included
 .venv\Scripts\orbital ingest-cdm --days 3   # Space-Track public conjunction messages
 .venv\Scripts\python -m pytest              # tests (no database needed)
+.venv\Scripts\python -m uvicorn orbital.api:app --reload --port 8000   # API at http://localhost:8000/docs
 ```
+
+## API
+
+- `GET /api/catalog`: latest OMM element set for every object in orbit (about 33k), columnar JSON with OMM keyword names so the browser can pass each row to satellite.js `json2satrec`. About 1.9 MB gzipped; cached in memory for 10 minutes, with an ETag.
+- `GET /api/objects/{norad_cat_id}`: SATCAT details, recent element sets and conjunction counts. Raw Space-Track CDMs are never served.
+- `GET /api/health`: last successful run per feed.
+
+Propagation for the globe happens in the browser. satellite.js 7.1.0 and python-sgp4 agree to the millimetre on the test fixtures, including catalog numbers 100000 and 123456789.
 
 ## Feeds and rate limits
 
