@@ -3,8 +3,17 @@
 import dynamic from "next/dynamic";
 import { useEffect, useMemo, useState } from "react";
 
+import { ConjunctionList, EventPanel } from "@/components/Conjunctions";
 import ObjectPanel from "@/components/ObjectPanel";
-import { type Catalog, fetchCatalog, OBJECT_TYPES, type ObjectType } from "@/lib/catalog";
+import {
+  type Catalog,
+  type ConjunctionEvent,
+  type ConjunctionsResponse,
+  fetchCatalog,
+  fetchConjunctions,
+  OBJECT_TYPES,
+  type ObjectType,
+} from "@/lib/catalog";
 
 // Cesium touches window and WebGL at import time, so the globe is client-only.
 const Globe = dynamic(() => import("@/components/Globe"), { ssr: false });
@@ -19,6 +28,9 @@ export default function Dashboard() {
   const [selected, setSelected] = useState<number | null>(null);
   const [flyRequest, setFlyRequest] = useState(0);
   const [query, setQuery] = useState("");
+  const [conjunctions, setConjunctions] = useState<ConjunctionsResponse | null>(null);
+  const [event, setEvent] = useState<ConjunctionEvent | null>(null);
+  const [focus, setFocus] = useState<{ tcaMs: number; request: number } | null>(null);
 
   useEffect(() => {
     const ctrl = new AbortController();
@@ -27,8 +39,17 @@ export default function Dashboard() {
       .catch((e: unknown) => {
         if (!ctrl.signal.aborted) setError(e instanceof Error ? e.message : String(e));
       });
+    fetchConjunctions(ctrl.signal)
+      .then(setConjunctions)
+      .catch(() => {}); // the globe works without them
     return () => ctrl.abort();
   }, []);
+
+  const indexById = useMemo(
+    () => new Map(catalog?.objects.map((o, i) => [o.omm.NORAD_CAT_ID, i]) ?? []),
+    [catalog],
+  );
+  const partner = event ? (indexById.get(event.sat2_id) ?? null) : null;
 
   const counts = useMemo(() => {
     const c: Record<ObjectType, number> = { PAY: 0, "R/B": 0, DEB: 0, UNK: 0 };
@@ -52,13 +73,29 @@ export default function Dashboard() {
     return out;
   }, [catalog, query]);
 
-  const pick = (index: number) => {
+  const select = (index: number | null) => {
     setSelected(index);
+    setEvent(null);
+  };
+
+  const pick = (index: number) => {
+    select(index);
     setFlyRequest((n) => n + 1);
     setQuery("");
     // Make sure the picked object's type is visible.
     const type = catalog!.objects[index].type;
     if (!visible.has(type)) setVisible(new Set([...visible, type]));
+  };
+
+  const focusEvent = (e: ConjunctionEvent) => {
+    const a = indexById.get(e.sat1_id);
+    if (a === undefined) return;
+    setSelected(a);
+    setEvent(e);
+    setFocus((f) => ({ tcaMs: Date.parse(e.tca), request: (f?.request ?? 0) + 1 }));
+    const b = indexById.get(e.sat2_id);
+    const types = [a, b].filter((i): i is number => i !== undefined).map((i) => catalog!.objects[i].type);
+    if (types.some((t) => !visible.has(t))) setVisible(new Set([...visible, ...types]));
   };
 
   const toggle = (type: ObjectType) => {
@@ -75,8 +112,10 @@ export default function Dashboard() {
           catalog={catalog}
           visibleTypes={visible}
           selected={selected}
-          onSelect={setSelected}
+          partner={partner}
+          onSelect={select}
           flyRequest={flyRequest}
+          focus={focus}
           onStatus={setStatus}
         />
       )}
@@ -149,14 +188,28 @@ export default function Dashboard() {
           ))}
         </ul>
 
+        {conjunctions && (
+          <details open className="mt-3 border-t border-panel-border pt-3">
+            <summary className="cursor-pointer text-xs font-semibold tracking-wide text-muted uppercase">
+              Close approaches
+            </summary>
+            <div className="mt-2">
+              <ConjunctionList data={conjunctions} active={event} onFocus={focusEvent} />
+            </div>
+          </details>
+        )}
+
         <p className="mt-3 text-[11px] leading-snug text-muted">
           Educational project, not for operational decisions. Operators rely on official conjunction messages. Data:
           CelesTrak, Space-Track.
         </p>
       </section>
 
-      {catalog && selected !== null && (
-        <ObjectPanel key={selected} entry={catalog.objects[selected]} onClose={() => setSelected(null)} />
+      {event ? (
+        <EventPanel event={event} onClose={() => select(null)} />
+      ) : (
+        catalog &&
+        selected !== null && <ObjectPanel key={selected} entry={catalog.objects[selected]} onClose={() => select(null)} />
       )}
     </main>
   );

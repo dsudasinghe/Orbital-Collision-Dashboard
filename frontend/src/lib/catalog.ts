@@ -86,3 +86,38 @@ export async function fetchObject(id: number, signal?: AbortSignal): Promise<Obj
   if (!res.ok) throw new Error(`object request failed: HTTP ${res.status}`);
   return res.json();
 }
+
+export interface ConjunctionEvent {
+  sat1_id: number;
+  sat1_name: string | null;
+  sat1_type: string | null;
+  sat2_id: number;
+  sat2_name: string | null;
+  sat2_type: string | null;
+  tca: string;
+  miss_km: number;
+  rel_speed_kms: number;
+  radial_km: number;
+  in_track_km: number;
+  cross_track_km: number;
+  pc_estimate: number | null;
+  in_spacetrack: boolean;
+}
+
+export interface ConjunctionsResponse {
+  run: {
+    id: number;
+    finished_at: string;
+    window_start: string;
+    window_end: string;
+    watch_count: number;
+    validation: { in_scope?: number; matched?: number; miss_diff_km_median?: number } | null;
+  } | null;
+  events: ConjunctionEvent[];
+}
+
+export async function fetchConjunctions(signal?: AbortSignal): Promise<ConjunctionsResponse> {
+  const res = await fetch("/api/conjunctions?limit=50&max_km=5", { signal });
+  if (!res.ok) throw new Error(`conjunctions request failed: HTTP ${res.status}`);
+  return res.json();
+}

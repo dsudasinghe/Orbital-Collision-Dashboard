@@ -22,3 +22,13 @@ export function orbitTrack(omm: Omm, startMs: number, steps = 240): number[] {
   }
   return out;
 }
+
+/** Earth-fixed position (metres) at `ms`, or null if propagation fails. */
+export function positionEcf(omm: Omm, ms: number): [number, number, number] | null {
+  const sat = json2satrec(omm as Parameters<typeof json2satrec>[0]);
+  const date = new Date(ms);
+  const pv = propagate(sat, date);
+  if (!pv?.position) return null;
+  const r = eciToEcf(pv.position, gstime(date));
+  return [r.x * 1000, r.y * 1000, r.z * 1000];
+}

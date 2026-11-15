@@ -1,15 +1,18 @@
 import argparse
+import json
 import logging
 import sys
 from collections.abc import Callable
+from datetime import UTC, datetime
 
 from sqlalchemy import text
 
-from orbital import celestrak, ingest, satcat, spacetrack
+from orbital import celestrak, conjunctions, ingest, satcat, spacetrack
 from orbital.cache import CachedText
 from orbital.config import get_settings
 from orbital.db import get_engine
 from orbital.omm import parse_records
+from orbital.screening import ScreeningParams
 
 log = logging.getLogger("orbital")
 
@@ -148,6 +151,56 @@ def cmd_refresh(args: argparse.Namespace) -> int:
     return status
 
 
+# Screening runs daily; skip if a run succeeded more recently than this.
+SCREEN_MIN_INTERVAL_H = 20
+
+
+def cmd_screen(args: argparse.Namespace) -> int:
+    engine = get_engine()
+    if not args.force and not args.ids:
+        with engine.connect() as conn:
+            age = conjunctions.last_ok_run_age_h(conn)
+        if age is not None and age < SCREEN_MIN_INTERVAL_H:
+            print(f"screening: not due (last run {age:.1f} h ago, interval {SCREEN_MIN_INTERVAL_H} h)")
+            return 0
+    start = datetime.now(UTC).replace(second=0, microsecond=0)
+    params = ScreeningParams(start=start, hours=args.hours, step_s=args.step, threshold_km=args.threshold)
+    try:
+        result = conjunctions.run(engine, params, args.ids)
+    except Exception:
+        log.exception("screening failed")
+        return 1
+    print(json.dumps(result, indent=2, default=str))
+    return 0
+
+
+def cmd_validate(args: argparse.Namespace) -> int:
+    with get_engine().begin() as conn:
+        run_id = args.run or conn.execute(text("SELECT max(id) FROM screening_runs WHERE status = 'ok'")).scalar()
+        if run_id is None:
+            print("no successful screening runs yet")
+            return 1
+        print(json.dumps({"run_id": run_id, **conjunctions.revalidate(conn, run_id)}, indent=2))
+    return 0
+
+
+def cmd_watchlist(args: argparse.Namespace) -> int:
+    with get_engine().begin() as conn:
+        if args.action == "add":
+            conn.execute(text("""
+                INSERT INTO watchlist (norad_cat_id, label) VALUES (:id, :label)
+                ON CONFLICT (norad_cat_id) DO UPDATE SET label = COALESCE(EXCLUDED.label, watchlist.label)
+            """), {"id": args.id, "label": args.label})
+        elif args.action == "remove":
+            conn.execute(text("DELETE FROM watchlist WHERE norad_cat_id = :id"), {"id": args.id})
+        for norad_id, label, name in conn.execute(text("""
+            SELECT w.norad_cat_id, w.label, o.object_name FROM watchlist w JOIN objects o USING (norad_cat_id) ORDER BY 1
+        """)):
+            print(f"{norad_id:>9}  {label or name}")
+        print(f"(plus objects in Space-Track public CDMs from the last {conjunctions.CDM_WATCH_DAYS} days, added at screening time)")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="orbital")
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -176,6 +229,24 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("refresh", help="scheduled run: every feed whose interval has passed")
     p.add_argument("--skip-spacetrack", action="store_true")
     p.set_defaults(func=cmd_refresh)
+
+    p = sub.add_parser("screen", help="screen the watchlist against the catalog and store conjunctions")
+    p.add_argument("--hours", type=float, default=72, help="window length from now (default: 72)")
+    p.add_argument("--step", type=float, default=30, help="coarse time step in seconds (default: 30)")
+    p.add_argument("--threshold", type=float, default=10, help="report passes closer than this, km (default: 10)")
+    p.add_argument("--ids", type=int, nargs="+", help="screen these catalog numbers instead of the watchlist")
+    p.add_argument("--force", action="store_true", help=f"run even if a run succeeded in the last {SCREEN_MIN_INTERVAL_H} h")
+    p.set_defaults(func=cmd_screen)
+
+    p = sub.add_parser("validate", help="compare a screening run with the Space-Track CDMs held now")
+    p.add_argument("--run", type=int, help="screening run id (default: latest successful)")
+    p.set_defaults(func=cmd_validate)
+
+    p = sub.add_parser("watchlist", help="list, add or remove watchlist objects")
+    p.add_argument("action", choices=["list", "add", "remove"], nargs="?", default="list")
+    p.add_argument("id", type=int, nargs="?", help="catalog number (for add / remove)")
+    p.add_argument("--label", help="display label (for add)")
+    p.set_defaults(func=cmd_watchlist)
 
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format="%(levelname)s %(name)s: %(message)s")
