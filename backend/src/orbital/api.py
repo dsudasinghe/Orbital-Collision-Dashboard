@@ -135,3 +135,40 @@ def object_detail(norad_cat_id: int) -> dict:
             FROM cdm_public WHERE :id IN (sat1_id, sat2_id)
         """), {"id": norad_cat_id}).mappings().one()
     return {"object": dict(obj), "elements": [dict(h) for h in history], "conjunctions": dict(conj)}
+
+
+@app.get("/api/conjunctions")
+def upcoming_conjunctions(limit: int = 50, max_km: float = 5.0) -> dict:
+    """Upcoming close approaches from the latest screening run, closest first.
+
+    Results are our own SGP4 screening. `in_spacetrack` says whether Space-Track
+    published a public CDM for the same pair near the same TCA; the message
+    itself is never returned.
+    """
+    limit = max(1, min(limit, 500))
+    with get_engine().connect() as conn:
+        run = conn.execute(text("""
+            SELECT id, finished_at, window_start, window_end, watch_count, validation
+            FROM screening_runs WHERE status = 'ok' ORDER BY id DESC LIMIT 1
+        """)).mappings().first()
+        if run is None:
+            return {"run": None, "events": []}
+        rows = conn.execute(text("""
+            SELECT c.sat1_id, o1.object_name AS sat1_name, o1.object_type AS sat1_type,
+                   c.sat2_id, o2.object_name AS sat2_name, o2.object_type AS sat2_type,
+                   c.tca, c.miss_km, c.rel_speed_kms, c.radial_km, c.in_track_km, c.cross_track_km,
+                   c.pc_estimate,
+                   EXISTS (
+                       SELECT 1 FROM cdm_public p
+                       WHERE LEAST(p.sat1_id, p.sat2_id) = LEAST(c.sat1_id, c.sat2_id)
+                         AND GREATEST(p.sat1_id, p.sat2_id) = GREATEST(c.sat1_id, c.sat2_id)
+                         AND p.tca BETWEEN c.tca - interval '2 minutes' AND c.tca + interval '2 minutes'
+                   ) AS in_spacetrack
+            FROM conjunctions c
+            JOIN objects o1 ON o1.norad_cat_id = c.sat1_id
+            JOIN objects o2 ON o2.norad_cat_id = c.sat2_id
+            WHERE c.run_id = :run AND c.tca > now() AND c.miss_km < :max_km
+            ORDER BY c.miss_km
+            LIMIT :limit
+        """), {"run": run["id"], "max_km": max_km, "limit": limit}).mappings().all()
+    return {"run": dict(run), "events": [dict(r) for r in rows]}

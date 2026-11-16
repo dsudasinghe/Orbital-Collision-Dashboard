@@ -24,7 +24,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 
 import { type Catalog, OBJECT_TYPES, type ObjectType } from "@/lib/catalog";
-import { orbitTrack, periodMinutes } from "@/lib/orbit";
+import { orbitTrack, periodMinutes, positionEcf } from "@/lib/orbit";
 import type { WorkerRequest, WorkerResponse } from "@/workers/propagate.worker";
 
 const POINT_SIZE = 2;
@@ -42,24 +42,34 @@ export interface GlobeProps {
   catalog: Catalog;
   visibleTypes: ReadonlySet<ObjectType>;
   selected: number | null; // index into catalog.objects
+  partner: number | null; // the other object of a selected conjunction
   onSelect: (index: number | null) => void;
   flyRequest: number; // increment to fly the camera to the selected object
+  focus: { tcaMs: number; request: number } | null; // jump the clock to just before a TCA
   onStatus?: (status: string) => void;
 }
 
-export default function Globe({ catalog, visibleTypes, selected, onSelect, flyRequest, onStatus }: GlobeProps) {
+// How far before TCA a focused conjunction starts, so the approach plays out.
+const FOCUS_LEAD_MS = 90_000;
+
+export default function Globe({ catalog, visibleTypes, selected, partner, onSelect, flyRequest, focus, onStatus }: GlobeProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  // State so effects re-run once the viewer exists; ref for mutating Cesium's
+  // own objects (clock, camera), which React's linter rightly won't allow on state.
   const [viewer, setViewer] = useState<Viewer | null>(null);
+  const viewerRef = useRef<Viewer | null>(null);
   const pointsRef = useRef<PointPrimitive[]>([]);
   const statesRef = useRef<{ timeMs: number; states: Float64Array } | null>(null);
   // Props read inside long-lived Cesium callbacks.
   const visibleRef = useRef(visibleTypes);
   const selectedRef = useRef(selected);
+  const partnerRef = useRef(partner);
   const onSelectRef = useRef(onSelect);
   const onStatusRef = useRef(onStatus);
   useEffect(() => {
     visibleRef.current = visibleTypes;
     selectedRef.current = selected;
+    partnerRef.current = partner;
     onSelectRef.current = onSelect;
     onStatusRef.current = onStatus;
   });
@@ -80,9 +90,11 @@ export default function Globe({ catalog, visibleTypes, selected, onSelect, flyRe
       selectionIndicator: false,
     });
     v.scene.globe.enableLighting = true;
+    viewerRef.current = v;
     setViewer(v);
     return () => {
       setViewer(null);
+      viewerRef.current = null;
       v.destroy();
     };
   }, []);
@@ -100,8 +112,8 @@ export default function Globe({ catalog, visibleTypes, selected, onSelect, flyRe
     const types = catalog.objects.map((o) => o.type);
 
     const tracks = scene.primitives.add(new PolylineCollection());
-    let track: Polyline | null = null;
-    let trackFor: { index: number; startMs: number } | null = null;
+    // One-orbit path per highlighted object (selected, and its conjunction partner).
+    const trackLines = new Map<number, { line: Polyline; startMs: number }>();
 
     const worker = new Worker(new URL("../workers/propagate.worker.ts", import.meta.url), { type: "module" });
     let ready = false;
@@ -158,27 +170,29 @@ export default function Globe({ catalog, visibleTypes, selected, onSelect, flyRe
         point.show = true;
       }
 
-      // Orbit path for the selected object, redrawn as time moves on.
-      const sel = selectedRef.current;
-      if (sel === null) {
-        if (track) {
-          tracks.remove(track);
-          track = null;
-          trackFor = null;
+      // Orbit paths for highlighted objects, redrawn as time moves on.
+      const wanted = [selectedRef.current, partnerRef.current].filter((i): i is number => i !== null);
+      for (const [index, t] of trackLines) {
+        if (!wanted.includes(index)) {
+          tracks.remove(t.line);
+          trackLines.delete(index);
         }
-      } else {
-        const omm = catalog.objects[sel].omm;
-        const stale = !trackFor || trackFor.index !== sel || Math.abs(nowMs - trackFor.startMs) > (periodMinutes(omm) * 60_000) / 40;
-        if (stale) {
-          if (track) tracks.remove(track);
-          track = tracks.add({
+      }
+      for (const index of wanted) {
+        const omm = catalog.objects[index].omm;
+        const t = trackLines.get(index);
+        if (t && Math.abs(nowMs - t.startMs) <= (periodMinutes(omm) * 60_000) / 40) continue;
+        if (t) tracks.remove(t.line);
+        const color = index === selectedRef.current ? Color.WHITE : TYPE_COLORS[catalog.objects[index].type];
+        trackLines.set(index, {
+          line: tracks.add({
             positions: Cartesian3.unpackArray(orbitTrack(omm, nowMs)),
             width: 1.5,
             arcType: ArcType.NONE,
-            material: Material.fromType("Color", { color: Color.WHITE.withAlpha(0.6) }),
-          });
-          trackFor = { index: sel, startMs: nowMs };
-        }
+            material: Material.fromType("Color", { color: color.withAlpha(0.6) }),
+          }),
+          startMs: nowMs,
+        });
       }
     });
 
@@ -200,21 +214,42 @@ export default function Globe({ catalog, visibleTypes, selected, onSelect, flyRe
     };
   }, [viewer, catalog]);
 
-  // Highlight the selected point.
+  // Highlight the selected point and its conjunction partner.
   useEffect(() => {
     const points = pointsRef.current;
-    if (selected === null || !points[selected]) return;
-    const point = points[selected];
-    point.pixelSize = SELECTED_SIZE;
-    point.color = Color.WHITE;
-    point.outlineColor = TYPE_COLORS[catalog.objects[selected].type];
-    point.outlineWidth = 2;
+    const lit = [selected, partner].filter((i): i is number => i !== null && !!points[i]);
+    for (const i of lit) {
+      points[i].pixelSize = SELECTED_SIZE;
+      points[i].color = i === selected ? Color.WHITE : TYPE_COLORS[catalog.objects[i].type];
+      points[i].outlineColor = i === selected ? TYPE_COLORS[catalog.objects[i].type] : Color.WHITE;
+      points[i].outlineWidth = 2;
+    }
     return () => {
-      point.pixelSize = POINT_SIZE;
-      point.color = TYPE_COLORS[catalog.objects[selected].type];
-      point.outlineWidth = 0;
+      for (const i of lit) {
+        points[i].pixelSize = POINT_SIZE;
+        points[i].color = TYPE_COLORS[catalog.objects[i].type];
+        points[i].outlineWidth = 0;
+      }
     };
-  }, [selected, catalog, viewer]);
+  }, [selected, partner, catalog, viewer]);
+
+  // Jump to just before a conjunction's TCA and look down on where it happens.
+  useEffect(() => {
+    const sel = selectedRef.current;
+    const v = viewerRef.current;
+    if (!focus || !viewer || !v || sel === null) return;
+    v.clock.currentTime = JulianDate.fromDate(new Date(focus.tcaMs - FOCUS_LEAD_MS));
+    v.clock.multiplier = 1;
+    v.clock.shouldAnimate = true;
+    v.timeline?.zoomTo(JulianDate.fromDate(new Date(focus.tcaMs - 30 * 60_000)), JulianDate.fromDate(new Date(focus.tcaMs + 30 * 60_000)));
+    const at = positionEcf(catalog.objects[sel].omm, focus.tcaMs);
+    if (!at) return;
+    const p = new Cartesian3(...at);
+    const destination = Cartesian3.multiplyByScalar(
+      Cartesian3.normalize(p, new Cartesian3()), Cartesian3.magnitude(p) + 2.5e6, new Cartesian3(),
+    );
+    v.camera.flyTo({ destination, duration: 1.5 });
+  }, [focus, viewer, catalog]);
 
   // Fly to the selected object when asked (search results), not on every click.
   useEffect(() => {

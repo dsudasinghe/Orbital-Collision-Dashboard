@@ -4,6 +4,7 @@ name: refresh
 # drops scheduled runs under load, so triggering often keeps the data fresh;
 # `orbital refresh` decides per feed whether it is actually due (CelesTrak 2 h,
 # Space-Track 8 h) using ingest_runs, so extra triggers cost one DB query.
+# `orbital screen` likewise runs at most every 20 h (about 3 minutes when due).
 on:
   schedule:
     - cron: "7,37 * * * *"
@@ -16,7 +17,7 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: backend
@@ -35,3 +36,10 @@ jobs:
       - run: pip install -e .
       - run: alembic upgrade head
       - run: orbital refresh
+      # Screen after fresh elements are in. Runs even if a feed failed, using
+      # the latest elements held.
+      - run: orbital screen
+        if: ${{ !cancelled() }}
+      # Space-Track publishes events after we screen, so re-check the latest run.
+      - run: orbital validate
+        if: ${{ !cancelled() }}

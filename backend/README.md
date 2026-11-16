@@ -23,6 +23,9 @@ copy .env.example .env   # then fill in DATABASE_URL
 .venv\Scripts\orbital ingest-satcat         # CelesTrak SATCAT: type, owner, launch/decay dates
 .venv\Scripts\orbital ingest-catalog        # Space-Track full GP catalog, debris included
 .venv\Scripts\orbital ingest-cdm --days 3   # Space-Track public conjunction messages
+.venv\Scripts\orbital screen                 # screen the watchlist against the catalog, next 72 h (daily)
+.venv\Scripts\orbital validate              # re-compare the latest screening run with Space-Track CDMs
+.venv\Scripts\orbital watchlist add 25544 --label ISS
 .venv\Scripts\python -m pytest              # tests (no database needed)
 .venv\Scripts\python -m uvicorn orbital.api:app --reload --port 8000   # API at http://localhost:8000/docs
 ```
@@ -31,6 +34,7 @@ copy .env.example .env   # then fill in DATABASE_URL
 
 - `GET /api/catalog`: latest OMM element set for every object in orbit (about 33k), columnar JSON with OMM keyword names so the browser can pass each row to satellite.js `json2satrec`. About 1.9 MB gzipped; cached in memory for 10 minutes, with an ETag.
 - `GET /api/objects/{norad_cat_id}`: SATCAT details, recent element sets and conjunction counts. Raw Space-Track CDMs are never served.
+- `GET /api/conjunctions`: upcoming close approaches from the latest screening run, closest first, with an `in_spacetrack` flag (whether Space-Track published the same event; the message itself is never returned) and the run's validation summary.
 - `GET /api/health`: last successful run per feed.
 
 Propagation for the globe happens in the browser. satellite.js 7.1.0 and python-sgp4 agree to the millimetre on the test fixtures, including catalog numbers 100000 and 123456789.
@@ -48,9 +52,32 @@ Whether a feed is due is decided from `ingest_runs` in the database, not the loc
 
 Raw downloads are also kept gzipped in `data/` locally (not in CI).
 
+## Conjunction screening
+
+`orbital screen` screens the watchlist against every object in orbit for the next 72 hours:
+
+1. **Orbit-shell filter**: drop objects whose perigee-apogee band never comes within 50 km of a watched object's.
+2. **Coarse search** on a 30 s grid: a KD-tree per step finds neighbours within `threshold x 1.5 + 16 km/s x step / 2` (no pair can cross between grid points unseen), then each pair's straight-line closest approach within the step.
+3. **Refinement**: minimise the SGP4 distance around each candidate pass for TCA and miss distance, plus the radial / in-track / cross-track split.
+
+Attached objects (station modules, docked vehicles: relative speed under 10 m/s, within 1 km) are skipped. Passes under 10 km are stored.
+
+The watchlist is the `watchlist` table (ISS, Tiangong and Hubble to start) plus every object named in a Space-Track public CDM in the last 7 days, which keeps the comparison with Space-Track running on every run.
+
+**Validation against Space-Track (Nov 2026):**
+
+| Window | Space-Track events in scope | Found | TCA difference (median) | Miss-distance difference (median / 90th pct) |
+| --- | --- | --- | --- | --- |
+| 11-17 Nov, retrospective (6.5 days) | 78 | 78 | 0.08 s | 0.22 km / 1.09 km |
+| 15-18 Nov, first scheduled run | 30 | 30 | 0.08 s | 0.17 km / 0.46 km |
+
+Recall held across 0-4 days of element age. Ranked by our miss distance, Space-Track's events sit at median rank 22 of ~5,900 passes. Events with analyst objects (no public elements) are out of scope. The watchlist includes the CDM objects, so recall here measures screening accuracy, not whether we would have picked those objects.
+
+**Collision probability** is a rough estimate: GP data has no covariance, so each object gets an assumed Gaussian (radial 0.1 km, cross-track 0.15 km, in-track 0.4 km + 0.3 km/day of element age), projected onto the encounter plane. It ranks events reasonably (52 of Space-Track's 78 events in our top 100) but does not reproduce Space-Track's values (Spearman 0.22, typically orders of magnitude lower), because a 0.2 km miss-distance difference dominates at these scales. The UI leads with miss distance and labels Pc an estimate. Slow encounters (under 100 m/s) get no Pc.
+
 ## Schedule
 
-`.github/workflows/refresh.yml` runs `orbital refresh` every 2 hours on GitHub Actions. It needs repository secrets `DATABASE_URL`, `SPACETRACK_IDENTITY`, `SPACETRACK_PASSWORD` and `CELESTRAK_USER_AGENT`. Scheduled workflows only run from the default branch.
+`.github/workflows/refresh.yml` runs every 30 minutes on GitHub Actions (GitHub drops scheduled runs under load, so it triggers often and each step checks whether it is due): `orbital refresh`, then `orbital screen` (at most every 20 h) and `orbital validate`. It needs repository secrets `DATABASE_URL`, `SPACETRACK_IDENTITY`, `SPACETRACK_PASSWORD` and `CELESTRAK_USER_AGENT`. Scheduled workflows only run from the default branch.
 
 ## Schema
 
@@ -59,6 +86,9 @@ Raw downloads are also kept gzipped in `data/` locally (not in CI).
 - `gp_latest`: view of the newest set per object.
 - `ingest_runs`: one row per run with status and counts, for monitoring and rate limiting.
 - `cdm_public`: Space-Track public conjunction messages. Private (RLS, no policies): the user agreement restricts redistribution.
+- `watchlist`: objects screened against the catalog (plus recent CDM objects, added at run time).
+- `screening_runs`: one row per screening run: window, parameters, timings, watchlist and validation summary.
+- `conjunctions`: our close approaches per run (TCA, miss, relative speed, RTN components, Pc estimate).
 
 ## Catalog numbers above 99999
 
