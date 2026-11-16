@@ -8,6 +8,7 @@ CDMs are never exposed here: the user agreement restricts redistribution.
 import gzip
 import hashlib
 import json
+import math
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -20,7 +21,9 @@ from sqlalchemy import text
 
 from orbital.catalog import load_latest
 from orbital.db import get_engine
+from orbital.ml.rule import HIGH_RISK, load_rule
 
+_RISK_RULE = load_rule()
 CATALOG_TTL_S = 10 * 60  # data refreshes every 2 h; 10 min keeps the API close behind
 
 # Column order of /api/catalog rows. OMM keyword names, so the browser can hand
@@ -158,17 +161,39 @@ def upcoming_conjunctions(limit: int = 50, max_km: float = 5.0) -> dict:
                    c.sat2_id, o2.object_name AS sat2_name, o2.object_type AS sat2_type,
                    c.tca, c.miss_km, c.rel_speed_kms, c.radial_km, c.in_track_km, c.cross_track_km,
                    c.pc_estimate,
-                   EXISTS (
-                       SELECT 1 FROM cdm_public p
-                       WHERE LEAST(p.sat1_id, p.sat2_id) = LEAST(c.sat1_id, c.sat2_id)
-                         AND GREATEST(p.sat1_id, p.sat2_id) = GREATEST(c.sat1_id, c.sat2_id)
-                         AND p.tca BETWEEN c.tca - interval '2 minutes' AND c.tca + interval '2 minutes'
-                   ) AS in_spacetrack
+                   st.created AS st_created, st.pc AS st_pc
             FROM conjunctions c
             JOIN objects o1 ON o1.norad_cat_id = c.sat1_id
             JOIN objects o2 ON o2.norad_cat_id = c.sat2_id
+            -- Latest Space-Track public CDM for the same pair near the same TCA, if any.
+            LEFT JOIN LATERAL (
+                SELECT p.created, p.pc FROM cdm_public p
+                WHERE LEAST(p.sat1_id, p.sat2_id) = LEAST(c.sat1_id, c.sat2_id)
+                  AND GREATEST(p.sat1_id, p.sat2_id) = GREATEST(c.sat1_id, c.sat2_id)
+                  AND p.tca BETWEEN c.tca - interval '2 minutes' AND c.tca + interval '2 minutes'
+                ORDER BY p.created DESC LIMIT 1
+            ) st ON true
             WHERE c.run_id = :run AND c.tca > now() AND c.miss_km < :max_km
             ORDER BY c.miss_km
             LIMIT :limit
         """), {"run": run["id"], "max_km": max_km, "limit": limit}).mappings().all()
-    return {"run": dict(run), "events": [dict(r) for r in rows]}
+    return {"run": dict(run), "events": [_with_forecast(dict(r)) for r in rows]}
+
+
+def _with_forecast(row: dict) -> dict:
+    """Replace the Space-Track fields with derived ones: never the message or its Pc.
+
+    `forecast_high_risk` is the risk forecaster (models/risk/MODEL_CARD.md)
+    applied to Space-Track's latest Pc: will the final CDM's risk be >= 1e-6?
+    Experimental: the model was trained on ESA CDMs released >= 2 days before
+    TCA; `forecast_lead_days` says how far ahead this one is.
+    """
+    created, pc = row.pop("st_created"), row.pop("st_pc")
+    row["in_spacetrack"] = created is not None
+    row["forecast_high_risk"] = None
+    row["forecast_lead_days"] = None
+    if created is not None and pc is not None:
+        latest = math.log10(pc) if pc > 0 else -30.0
+        row["forecast_high_risk"] = bool(_RISK_RULE.predict([latest])[0] >= HIGH_RISK)
+        row["forecast_lead_days"] = round((row["tca"] - created).total_seconds() / 86400, 1)
+    return row
