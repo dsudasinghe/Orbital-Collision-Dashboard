@@ -48,6 +48,11 @@ export function ConjunctionList({
                 <span className="flex justify-between gap-2 text-[11px] text-muted">
                   <span>{formatTca(e.tca)}</span>
                   <span className="flex gap-2">
+                    {e.stale && (
+                      <span className="text-amber-300" title="An object manoeuvred after the elements used for this screening">
+                        stale
+                      </span>
+                    )}
                     {e.forecast_high_risk && (
                       <span className="text-red-300" title="Risk forecaster (experimental): final risk likely ≥ 1e-6">
                         high risk
@@ -91,6 +96,15 @@ export function EventPanel({ event, onClose }: { event: ConjunctionEvent; onClos
           ✕
         </button>
       </div>
+
+      {event.stale && (
+        <p className="mt-3 rounded bg-amber-950/60 p-2 text-xs text-amber-200">
+          {[event.sat1_event && `${event.sat1_name}: ${event.sat1_event}`, event.sat2_event && `${event.sat2_name}: ${event.sat2_event}`]
+            .filter(Boolean)
+            .join("; ")}{" "}
+          detected after the element sets this screening used. The miss distance below may no longer hold.
+        </p>
+      )}
 
       <dl className="mt-3 divide-y divide-white/5">
         <Row label="Time of closest approach" value={new Date(event.tca).toLocaleString()} />

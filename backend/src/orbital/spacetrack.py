@@ -91,6 +91,25 @@ def fetch_gp_catalog(settings: Settings, *, force: bool = False) -> tuple[list[d
     return _parse(cached.text), cached
 
 
+def fetch_gp_history(settings: Settings, ids: list[int], days: int) -> tuple[list[dict[str, Any]], CachedText]:
+    """Every element set for `ids` with epoch in the last `days` days, in one query.
+
+    Space-Track asks that history be downloaded once and stored, so this is a
+    one-off backfill, cached locally and never scheduled.
+    """
+    path = (
+        f"/basicspacedata/query/class/gp_history/NORAD_CAT_ID/{','.join(map(str, sorted(ids)))}"
+        f"/EPOCH/%3Enow-{days}/orderby/NORAD_CAT_ID,EPOCH/format/json"
+    )
+    key = f"{min(ids)}-{max(ids)}-n{len(ids)}-{days}d"
+    cached = cached_download(
+        settings.data_dir / "spacetrack" / "gp_history" / key, "json",
+        min_interval_s=365 * 86400, force=False,
+        download=lambda: _query(settings, path), validate=_parse,
+    )
+    return _parse(cached.text), cached
+
+
 # --- parsing --------------------------------------------------------------
 
 COLUMNS = [

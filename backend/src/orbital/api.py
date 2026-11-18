@@ -137,7 +137,15 @@ def object_detail(norad_cat_id: int) -> dict:
                    min(tca) FILTER (WHERE tca > now()) AS next_tca
             FROM cdm_public WHERE :id IN (sat1_id, sat2_id)
         """), {"id": norad_cat_id}).mappings().one()
-    return {"object": dict(obj), "elements": [dict(h) for h in history], "conjunctions": dict(conj)}
+        events = conn.execute(text("""
+            SELECT epoch, kind, da_km, d_inc_deg FROM manoeuvres
+            WHERE norad_cat_id = :id AND epoch > now() - interval '90 days'
+            ORDER BY epoch DESC
+        """), {"id": norad_cat_id}).mappings().all()
+        score = conn.execute(text("SELECT score, scored_at FROM anomaly_scores WHERE norad_cat_id = :id"),
+                             {"id": norad_cat_id}).mappings().first()
+    return {"object": dict(obj), "elements": [dict(h) for h in history], "conjunctions": dict(conj),
+            "manoeuvres": [dict(e) for e in events], "anomaly": dict(score) if score else None}
 
 
 @app.get("/api/conjunctions")
@@ -161,7 +169,8 @@ def upcoming_conjunctions(limit: int = 50, max_km: float = 5.0) -> dict:
                    c.sat2_id, o2.object_name AS sat2_name, o2.object_type AS sat2_type,
                    c.tca, c.miss_km, c.rel_speed_kms, c.radial_km, c.in_track_km, c.cross_track_km,
                    c.pc_estimate,
-                   st.created AS st_created, st.pc AS st_pc
+                   st.created AS st_created, st.pc AS st_pc,
+                   m1.kind AS sat1_event, m2.kind AS sat2_event
             FROM conjunctions c
             JOIN objects o1 ON o1.norad_cat_id = c.sat1_id
             JOIN objects o2 ON o2.norad_cat_id = c.sat2_id
@@ -173,6 +182,16 @@ def upcoming_conjunctions(limit: int = 50, max_km: float = 5.0) -> dict:
                   AND p.tca BETWEEN c.tca - interval '2 minutes' AND c.tca + interval '2 minutes'
                 ORDER BY p.created DESC LIMIT 1
             ) st ON true
+            -- A manoeuvre or anomaly newer than the elements this screening used
+            -- makes its miss distance stale.
+            LEFT JOIN LATERAL (
+                SELECT kind FROM manoeuvres m WHERE m.norad_cat_id = c.sat1_id AND m.epoch > c.sat1_epoch
+                ORDER BY m.epoch DESC LIMIT 1
+            ) m1 ON true
+            LEFT JOIN LATERAL (
+                SELECT kind FROM manoeuvres m WHERE m.norad_cat_id = c.sat2_id AND m.epoch > c.sat2_epoch
+                ORDER BY m.epoch DESC LIMIT 1
+            ) m2 ON true
             WHERE c.run_id = :run AND c.tca > now() AND c.miss_km < :max_km
             ORDER BY c.miss_km
             LIMIT :limit
@@ -188,6 +207,7 @@ def _with_forecast(row: dict) -> dict:
     Experimental: the model was trained on ESA CDMs released >= 2 days before
     TCA; `forecast_lead_days` says how far ahead this one is.
     """
+    row["stale"] = bool(row["sat1_event"] or row["sat2_event"])
     created, pc = row.pop("st_created"), row.pop("st_pc")
     row["in_spacetrack"] = created is not None
     row["forecast_high_risk"] = None

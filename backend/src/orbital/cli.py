@@ -201,6 +201,36 @@ def cmd_watchlist(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_detect(args: argparse.Namespace) -> int:
+    from orbital import manoeuvres  # imports pandas
+
+    engine = get_engine()
+    if not args.force:
+        with engine.connect() as conn:
+            age = manoeuvres.last_ok_run_age_h(conn)
+        if age is not None and age < manoeuvres.DETECT_MIN_INTERVAL_H:
+            print(f"detect: not due (last run {age:.1f} h ago, interval {manoeuvres.DETECT_MIN_INTERVAL_H} h)")
+            return 0
+    try:
+        print(json.dumps(manoeuvres.run(engine), indent=2))
+    except Exception:
+        log.exception("detection failed")
+        return 1
+    return 0
+
+
+def cmd_ingest_history(args: argparse.Namespace) -> int:
+    """One-off backfill of element-set history (Space-Track: download history once and store it)."""
+    def job():
+        raws, fetch = spacetrack.fetch_gp_history(get_settings(), args.ids, args.days)
+        records, rejected = parse_records(raws)
+        _log_rejected(rejected)
+        with get_engine().begin() as conn:
+            result = ingest.store_records(conn, records, "spacetrack:gp_history")
+        return fetch, result.received, result.inserted, len(rejected)
+    return _run_logged("spacetrack:gp_history", job, force=True)
+
+
 def cmd_ml_risk(_args: argparse.Namespace) -> int:
     from orbital.ml import risk_model  # heavy imports only when used
 
@@ -257,6 +287,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("id", type=int, nargs="?", help="catalog number (for add / remove)")
     p.add_argument("--label", help="display label (for add)")
     p.set_defaults(func=cmd_watchlist)
+
+    p = sub.add_parser("detect", help="detect manoeuvres and score anomalies for watched objects")
+    p.add_argument("--force", action="store_true", help="run even if a run succeeded in the last 20 h")
+    p.set_defaults(func=cmd_detect)
+
+    p = sub.add_parser("ingest-history", help="one-off: Space-Track element-set history for given objects")
+    p.add_argument("--ids", type=int, nargs="+", required=True, help="catalog numbers")
+    p.add_argument("--days", type=int, default=90, help="history length in days (default: 90)")
+    p.set_defaults(func=cmd_ingest_history)
 
     sub.add_parser("ml-risk", help="fit and evaluate the collision-risk forecaster on ESA Kelvins data").set_defaults(func=cmd_ml_risk)
 

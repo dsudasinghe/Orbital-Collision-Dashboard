@@ -78,6 +78,29 @@ export default function ObjectPanel({ entry, onClose }: { entry: CatalogObject; 
           <Row label="Next TCA" value={conj.next_tca ? new Date(conj.next_tca).toLocaleString() : null} />
         </dl>
       )}
+
+      {detail && (
+        <>
+          <h3 className="mt-4 text-xs font-semibold tracking-wide text-muted uppercase">Manoeuvres &amp; anomalies (90 d)</h3>
+          {!detail.anomaly && (
+            <p className="mt-1 text-xs text-muted">Not monitored: only watched objects with 20+ element sets are scored.</p>
+          )}
+          {detail.anomaly && detail.manoeuvres.length === 0 && (
+            <p className="mt-1 text-xs text-muted">None detected.</p>
+          )}
+          {detail.manoeuvres.length > 0 && (
+            <dl className="mt-1 divide-y divide-white/5">
+              {detail.manoeuvres.map((m) => (
+                <Row
+                  key={m.epoch}
+                  label={`${new Date(m.epoch).toLocaleDateString()} · ${m.kind}`}
+                  value={m.kind === "plane change" ? `${m.d_inc_deg >= 0 ? "+" : ""}${m.d_inc_deg.toFixed(3)}°` : `${m.da_km >= 0 ? "+" : ""}${m.da_km.toFixed(2)} km`}
+                />
+              ))}
+            </dl>
+          )}
+        </>
+      )}
     </aside>
   );
 }

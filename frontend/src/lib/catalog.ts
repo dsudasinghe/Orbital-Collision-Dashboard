@@ -79,6 +79,9 @@ export interface ObjectDetail {
   };
   elements: { epoch: string; mean_motion: number; eccentricity: number; inclination: number; bstar: number }[];
   conjunctions: { events: number; closest_m: number | null; max_pc: number | null; next_tca: string | null };
+  // Detected from element history; "anomaly" is an unexplained change on an object that can't manoeuvre.
+  manoeuvres: { epoch: string; kind: "orbit raise" | "orbit lower" | "plane change" | "anomaly"; da_km: number; d_inc_deg: number }[];
+  anomaly: { score: number; scored_at: string } | null;
 }
 
 export async function fetchObject(id: number, signal?: AbortSignal): Promise<ObjectDetail> {
@@ -102,6 +105,10 @@ export interface ConjunctionEvent {
   cross_track_km: number;
   pc_estimate: number | null;
   in_spacetrack: boolean;
+  // A manoeuvre or anomaly newer than the elements this screening used: the miss distance may be stale.
+  sat1_event: string | null;
+  sat2_event: string | null;
+  stale: boolean;
   // Risk forecaster on Space-Track's latest Pc (experimental): will the final risk be >= 1e-6?
   forecast_high_risk: boolean | null;
   forecast_lead_days: number | null;

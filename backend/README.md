@@ -27,6 +27,8 @@ copy .env.example .env   # then fill in DATABASE_URL
 .venv\Scripts\orbital validate              # re-compare the latest screening run with Space-Track CDMs
 .venv\Scripts\orbital watchlist add 25544 --label ISS
 .venv\Scripts\orbital ml-risk               # fit + evaluate the risk forecaster on ESA Kelvins data (~20 s)
+.venv\Scripts\orbital detect                # manoeuvres and anomalies for watched objects (daily)
+.venv\Scripts\orbital ingest-history --ids 25544 48274 --days 90   # one-off Space-Track history backfill
 .venv\Scripts\python -m pytest              # tests (no database needed)
 .venv\Scripts\python -m uvicorn orbital.api:app --reload --port 8000   # API at http://localhost:8000/docs
 ```
@@ -90,9 +92,30 @@ Chosen by cross-validation on training events only (prior-corrected for the test
 
 Data: download the [Kelvins dataset](https://zenodo.org/record/4463683) (CC-BY-4.0, 221 MB, md5 `d19dc8875229f2f6893253c38adddc87`) and extract `kelvins_competition_data/*` (including the CSV inside `train_data.zip`) into `data/kelvins/competition/`.
 
+## Manoeuvre and anomaly detection
+
+`orbital detect` looks at every consecutive pair of element sets for watched objects (the screening watchlist plus objects in upcoming close approaches) over 90 days and measures what drag and normal propagation don't explain: the semi-major-axis jump beyond what the previous set's drag term predicts, inclination and eccentricity changes, and the SGP4 position residual. Each feature is compared with the object's own history by a robust z-score (median / MAD); objects need 20+ pairs.
+
+- **Operational payloads** (SATCAT status +, P, B, S, X): flag when z ≥ 6 and Δa ≥ 0.1 km or Δi ≥ 0.01°; labelled orbit raise / lower / plane change.
+- **Everything else** (debris, rocket bodies, dead payloads) can't manoeuvre, so stricter thresholds (z ≥ 8, Δa ≥ 0.3 km) and the label **anomaly**: an unexplained change (fragmentation, data error, drag event, re-entry).
+- Flags within 1.5 days merge into one event (orbit fits keep adjusting after a burn).
+
+**Validation (Nov 2026, 90 days of Space-Track history):**
+
+| Check | Result |
+| --- | --- |
+| ISS reboosts | 28 Aug (+2.20 km, before Progress 96) and 26 Sep (+2.08 km): the [Cygnus XL burn of 25 Sep](https://www.hjkc.de/_blog/27900-raumfahrt-iss-alltag-spacewalk-preps-biomedical-science-as-station-boosts-orbit-on-thursday/) |
+| Tiangong | 3 raises (28 Sep +0.69, 25 Oct +0.14, 14 Nov +3.57 km); no public dates to confirm |
+| Starlink (5 satellites) | routine station-keeping, 4-20 events each |
+| 245 objects that can't manoeuvre, 38,468 pairs | 11 anomalies (0.29 per 1,000 pairs), incl. a CZ-6A rocket body decaying fast before re-entry |
+
+Small burns (under ~0.2 km) are indistinguishable from GP fit noise on small debris: one threshold for everything gave 1.76 false events per 1,000 pairs on debris, hence the two profiles. An Isolation Forest on the same z-scores did worse than the rules (2-4 false alarms on six hand-picked inert objects where the rules had none) and isn't used; the per-object anomaly score is the largest |z| of the latest pair.
+
+`GET /api/objects/{id}` lists events from the last 90 days. `GET /api/conjunctions` marks an event `stale` when either object has an event newer than the elements the screening used.
+
 ## Schedule
 
-`.github/workflows/refresh.yml` runs every 30 minutes on GitHub Actions (GitHub drops scheduled runs under load, so it triggers often and each step checks whether it is due): `orbital refresh`, then `orbital screen` (at most every 20 h) and `orbital validate`. It needs repository secrets `DATABASE_URL`, `SPACETRACK_IDENTITY`, `SPACETRACK_PASSWORD` and `CELESTRAK_USER_AGENT`. Scheduled workflows only run from the default branch.
+`.github/workflows/refresh.yml` runs every 30 minutes on GitHub Actions (GitHub drops scheduled runs under load, so it triggers often and each step checks whether it is due): `orbital refresh`, then `orbital screen` (at most every 20 h), `orbital validate` and `orbital detect` (at most every 20 h). It needs repository secrets `DATABASE_URL`, `SPACETRACK_IDENTITY`, `SPACETRACK_PASSWORD` and `CELESTRAK_USER_AGENT`. Scheduled workflows only run from the default branch.
 
 ## Schema
 
@@ -104,6 +127,7 @@ Data: download the [Kelvins dataset](https://zenodo.org/record/4463683) (CC-BY-4
 - `watchlist`: objects screened against the catalog (plus recent CDM objects, added at run time).
 - `screening_runs`: one row per screening run: window, parameters, timings, watchlist and validation summary.
 - `conjunctions`: our close approaches per run (TCA, miss, relative speed, RTN components, Pc estimate).
+- `detection_runs`, `manoeuvres`, `anomaly_scores`: detection runs, detected events (one per object and epoch) and each watched object's latest anomaly score.
 
 Migrations: never apply one to the shared Supabase database from an unmerged branch. The scheduled refresh on `master` runs `alembic upgrade head` first and fails on a revision it doesn't have (this stopped refreshes for ~30 hours on 15-16 Nov 2026).
 
