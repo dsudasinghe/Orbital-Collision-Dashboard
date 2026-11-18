@@ -102,6 +102,9 @@ export interface ConjunctionEvent {
   cross_track_km: number;
   pc_estimate: number | null;
   in_spacetrack: boolean;
+  // Risk forecaster on Space-Track's latest Pc (experimental): will the final risk be >= 1e-6?
+  forecast_high_risk: boolean | null;
+  forecast_lead_days: number | null;
 }
 
 export interface ConjunctionsResponse {

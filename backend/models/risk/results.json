@@ -1,0 +1,130 @@
+{
+  "created_at": "2026-11-16T17:11:56+00:00",
+  "rule": {
+    "promote_from": -7.3,
+    "promoted_value": -5.6,
+    "flagged_shift": -0.1
+  },
+  "protocol": {
+    "train_events": 8293,
+    "train_high_risk": 66,
+    "cv": "5-fold x 6 repeats, stratified on high risk, training events only",
+    "hr_prior_weight": 9.27,
+    "selection": "lowest mean prior-weighted CV loss; test scored once after selection"
+  },
+  "cv": {
+    "lrp_baseline": {
+      "loss_mean": 0.5151,
+      "loss_std": 0.3261,
+      "mse_hr_mean": 0.3321,
+      "f2_mean": 0.69
+    },
+    "learned_rule": {
+      "loss_mean": 0.3942,
+      "loss_std": 0.1654,
+      "mse_hr_mean": 0.2898,
+      "f2_mean": 0.7446
+    },
+    "rule_runners_up": [
+      {
+        "params": {
+          "promote_from": -7.0,
+          "promoted_value": -5.4,
+          "flagged_shift": -0.1
+        },
+        "loss_mean": 0.3955,
+        "loss_std": 0.171,
+        "mse_hr_mean": 0.2896,
+        "f2_mean": 0.7465
+      },
+      {
+        "params": {
+          "promote_from": -7.3,
+          "promoted_value": -5.4,
+          "flagged_shift": -0.1
+        },
+        "loss_mean": 0.396,
+        "loss_std": 0.159,
+        "mse_hr_mean": 0.2915,
+        "f2_mean": 0.7446
+      },
+      {
+        "params": {
+          "promote_from": -7.3,
+          "promoted_value": -5.6,
+          "flagged_shift": 0.0
+        },
+        "loss_mean": 0.3974,
+        "loss_std": 0.1721,
+        "mse_hr_mean": 0.2918,
+        "f2_mean": 0.7446
+      },
+      {
+        "params": {
+          "promote_from": -7.0,
+          "promoted_value": -5.6,
+          "flagged_shift": -0.1
+        },
+        "loss_mean": 0.3983,
+        "loss_std": 0.1791,
+        "mse_hr_mean": 0.291,
+        "f2_mean": 0.7465
+      },
+      {
+        "params": {
+          "promote_from": -7.0,
+          "promoted_value": -5.4,
+          "flagged_shift": 0.0
+        },
+        "loss_mean": 0.3989,
+        "loss_std": 0.1779,
+        "mse_hr_mean": 0.2915,
+        "f2_mean": 0.7465
+      }
+    ],
+    "lightgbm_promotions": {
+      "loss_mean": 0.4973,
+      "loss_std": 0.322,
+      "mse_hr_mean": 0.3321,
+      "f2_mean": 0.7149
+    }
+  },
+  "test": {
+    "constant_minus5": {
+      "loss": 2.5041,
+      "mse_hr": 0.6788,
+      "f2": 0.2711,
+      "n_events": 2167,
+      "n_high_risk": 150
+    },
+    "lrp_baseline": {
+      "loss": 0.694,
+      "mse_hr": 0.5129,
+      "f2": 0.7391,
+      "n_events": 2167,
+      "n_high_risk": 150
+    },
+    "lightgbm_promotions": {
+      "loss": 0.6915,
+      "mse_hr": 0.5129,
+      "f2": 0.7417,
+      "n_events": 2167,
+      "n_high_risk": 150
+    },
+    "learned_rule": {
+      "loss": 0.6338,
+      "mse_hr": 0.4675,
+      "f2": 0.7377,
+      "n_events": 2167,
+      "n_high_risk": 150
+    },
+    "learned_rule_gain_vs_lrp": 0.0867
+  },
+  "challenge_reference": {
+    "lrp": 0.694,
+    "winner_sesc": 0.556,
+    "second": 0.571,
+    "third": 0.585,
+    "tenth": 0.649
+  }
+}

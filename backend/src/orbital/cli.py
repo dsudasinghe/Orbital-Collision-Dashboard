@@ -201,6 +201,16 @@ def cmd_watchlist(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_ml_risk(_args: argparse.Namespace) -> int:
+    from orbital.ml import risk_model  # heavy imports only when used
+
+    result = risk_model.evaluate()
+    print(json.dumps({"rule": result["rule"], "cv": {k: v for k, v in result["cv"].items() if k != "rule_runners_up"},
+                      "test": result["test"]}, indent=2))
+    print(f"wrote {risk_model.MODEL_DIR / 'rule.json'} and results.json")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="orbital")
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -247,6 +257,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("id", type=int, nargs="?", help="catalog number (for add / remove)")
     p.add_argument("--label", help="display label (for add)")
     p.set_defaults(func=cmd_watchlist)
+
+    sub.add_parser("ml-risk", help="fit and evaluate the collision-risk forecaster on ESA Kelvins data").set_defaults(func=cmd_ml_risk)
 
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format="%(levelname)s %(name)s: %(message)s")

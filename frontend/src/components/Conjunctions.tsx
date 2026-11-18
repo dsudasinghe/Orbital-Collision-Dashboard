@@ -47,7 +47,14 @@ export function ConjunctionList({
                 </span>
                 <span className="flex justify-between gap-2 text-[11px] text-muted">
                   <span>{formatTca(e.tca)}</span>
-                  {e.in_spacetrack && <span title="Space-Track also published this event">Space-Track ✓</span>}
+                  <span className="flex gap-2">
+                    {e.forecast_high_risk && (
+                      <span className="text-red-300" title="Risk forecaster (experimental): final risk likely ≥ 1e-6">
+                        high risk
+                      </span>
+                    )}
+                    {e.in_spacetrack && <span title="Space-Track also published this event">Space-Track ✓</span>}
+                  </span>
                 </span>
               </button>
             </li>
@@ -92,12 +99,22 @@ export function EventPanel({ event, onClose }: { event: ConjunctionEvent; onClos
         <Row label="Radial / in-track / cross" value={`${event.radial_km.toFixed(2)} / ${event.in_track_km.toFixed(2)} / ${event.cross_track_km.toFixed(2)} km`} />
         <Row label="Collision probability*" value={event.pc_estimate != null ? event.pc_estimate.toExponential(1) : "n/a"} />
         <Row label="In Space-Track public CDMs" value={event.in_spacetrack ? "Yes" : "No"} />
+        <Row
+          label="Risk forecast†"
+          value={
+            event.forecast_high_risk == null
+              ? "n/a"
+              : `${event.forecast_high_risk ? "High" : "Low"} (${event.forecast_lead_days} d ahead)`
+          }
+        />
       </dl>
 
       <p className="mt-3 text-[11px] leading-snug text-muted">
         The globe has jumped to 90 s before closest approach. *Rough estimate from public GP data with an assumed
         covariance: miss distances are typically within ~0.2 km of Space-Track&apos;s, but probabilities can differ by
-        orders of magnitude. Not for operational use.
+        orders of magnitude. †Whether the final risk will reach 1e-6, from Space-Track&apos;s latest Pc and a rule
+        learned on ESA&apos;s Kelvins dataset (8.7% better than the naive baseline on held-out events). Experimental.
+        Not for operational use.
       </p>
     </aside>
   );

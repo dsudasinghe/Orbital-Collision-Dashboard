@@ -7,6 +7,7 @@ download, and don't fetch the same query more than once per update interval.
 import csv
 import io
 import json
+import time
 from typing import Any
 
 import httpx
@@ -22,13 +23,26 @@ class CelesTrakError(RuntimeError):
     pass
 
 
+RETRY_DELAY_S = 30.0
+
+
 def _get(settings: Settings, url: str, params: dict[str, str] | None = None) -> str:
-    resp = httpx.get(
-        url, params=params, headers={"User-Agent": settings.celestrak_user_agent},
-        timeout=120, follow_redirects=True,
-    )
-    resp.raise_for_status()
-    return resp.text
+    """GET with one retry after a pause on server errors or timeouts (CelesTrak
+    returns occasional 503s). Client errors are not retried."""
+    for attempt in (1, 2):
+        try:
+            resp = httpx.get(
+                url, params=params, headers={"User-Agent": settings.celestrak_user_agent},
+                timeout=120, follow_redirects=True,
+            )
+            resp.raise_for_status()
+            return resp.text
+        except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
+            server_side = isinstance(exc, httpx.TimeoutException) or exc.response.status_code >= 500
+            if attempt == 2 or not server_side:
+                raise
+            time.sleep(RETRY_DELAY_S)
+    raise AssertionError("unreachable")
 
 
 def _parse_gp(text: str) -> list[dict[str, Any]]:

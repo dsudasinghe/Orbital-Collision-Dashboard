@@ -66,3 +66,41 @@ def test_cache_never_stores_invalid_payload(tmp_path):
         cached_download(tmp_path, "json", min_interval_s=3600, force=False,
                         download=lambda: "rate limited", validate=validate)
     assert list(tmp_path.iterdir()) == []
+
+
+def test_celestrak_retries_once_on_server_error(monkeypatch):
+    import httpx
+
+    from orbital import celestrak
+    from orbital.config import Settings
+
+    calls = []
+
+    def fake_get(url, **kwargs):
+        calls.append(url)
+        status = 503 if len(calls) == 1 else 200
+        return httpx.Response(status, text="[]", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(celestrak.httpx, "get", fake_get)
+    monkeypatch.setattr(celestrak, "RETRY_DELAY_S", 0)
+    assert celestrak._get(Settings(database_url="x"), "https://example.test") == "[]"
+    assert len(calls) == 2
+
+
+def test_celestrak_does_not_retry_client_errors(monkeypatch):
+    import httpx
+
+    from orbital import celestrak
+    from orbital.config import Settings
+
+    calls = []
+
+    def fake_get(url, **kwargs):
+        calls.append(url)
+        return httpx.Response(404, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(celestrak.httpx, "get", fake_get)
+    monkeypatch.setattr(celestrak, "RETRY_DELAY_S", 0)
+    with pytest.raises(httpx.HTTPStatusError):
+        celestrak._get(Settings(database_url="x"), "https://example.test")
+    assert len(calls) == 1

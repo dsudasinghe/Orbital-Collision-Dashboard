@@ -7,7 +7,7 @@ Python service for ingest, propagation, conjunction screening and ML. Data lives
 ```powershell
 cd backend
 python -m venv .venv
-.venv\Scripts\python -m pip install -e ".[dev]"
+.venv\Scripts\python -m pip install -e ".[dev]"   # [dev] includes the ML extra; the API alone needs only `pip install -e .`
 copy .env.example .env   # then fill in DATABASE_URL
 ```
 
@@ -26,6 +26,7 @@ copy .env.example .env   # then fill in DATABASE_URL
 .venv\Scripts\orbital screen                 # screen the watchlist against the catalog, next 72 h (daily)
 .venv\Scripts\orbital validate              # re-compare the latest screening run with Space-Track CDMs
 .venv\Scripts\orbital watchlist add 25544 --label ISS
+.venv\Scripts\orbital ml-risk               # fit + evaluate the risk forecaster on ESA Kelvins data (~20 s)
 .venv\Scripts\python -m pytest              # tests (no database needed)
 .venv\Scripts\python -m uvicorn orbital.api:app --reload --port 8000   # API at http://localhost:8000/docs
 ```
@@ -75,6 +76,20 @@ Recall held across 0-4 days of element age. Ranked by our miss distance, Space-T
 
 **Collision probability** is a rough estimate: GP data has no covariance, so each object gets an assumed Gaussian (radial 0.1 km, cross-track 0.15 km, in-track 0.4 km + 0.3 km/day of element age), projected onto the encounter plane. It ranks events reasonably (52 of Space-Track's 78 events in our top 100) but does not reproduce Space-Track's values (Spearman 0.22, typically orders of magnitude lower), because a 0.2 km miss-distance difference dominates at these scales. The UI leads with miss distance and labels Pc an estimate. Slow encounters (under 100 m/s) get no Pc.
 
+## Collision-risk forecaster
+
+Predicts whether an event's final risk will reach 1e-6 from the CDMs released at least 2 days before closest approach: the ESA Kelvins Collision Avoidance Challenge task, scored with the challenge's own metric. Full write-up: [models/risk/MODEL_CARD.md](models/risk/MODEL_CARD.md).
+
+| Model | Official test loss | vs naive baseline |
+| --- | --- | --- |
+| Latest known risk (naive baseline) | 0.694 | |
+| Baseline + LightGBM classifier promotions | 0.692 | −0.4% |
+| **Learned three-parameter rule (deployed)** | **0.634** | **−8.7%** |
+
+Chosen by cross-validation on training events only (prior-corrected for the test set's published high-risk share), then scored on the test set once. LightGBM on 119 features did not beat the latest known risk. The API applies the rule to Space-Track's latest Pc for matched events and returns only a high/low flag (`forecast_high_risk`), never the Pc.
+
+Data: download the [Kelvins dataset](https://zenodo.org/record/4463683) (CC-BY-4.0, 221 MB, md5 `d19dc8875229f2f6893253c38adddc87`) and extract `kelvins_competition_data/*` (including the CSV inside `train_data.zip`) into `data/kelvins/competition/`.
+
 ## Schedule
 
 `.github/workflows/refresh.yml` runs every 30 minutes on GitHub Actions (GitHub drops scheduled runs under load, so it triggers often and each step checks whether it is due): `orbital refresh`, then `orbital screen` (at most every 20 h) and `orbital validate`. It needs repository secrets `DATABASE_URL`, `SPACETRACK_IDENTITY`, `SPACETRACK_PASSWORD` and `CELESTRAK_USER_AGENT`. Scheduled workflows only run from the default branch.
@@ -89,6 +104,8 @@ Recall held across 0-4 days of element age. Ranked by our miss distance, Space-T
 - `watchlist`: objects screened against the catalog (plus recent CDM objects, added at run time).
 - `screening_runs`: one row per screening run: window, parameters, timings, watchlist and validation summary.
 - `conjunctions`: our close approaches per run (TCA, miss, relative speed, RTN components, Pc estimate).
+
+Migrations: never apply one to the shared Supabase database from an unmerged branch. The scheduled refresh on `master` runs `alembic upgrade head` first and fails on a revision it doesn't have (this stopped refreshes for ~30 hours on 15-16 Nov 2026).
 
 ## Catalog numbers above 99999
 
